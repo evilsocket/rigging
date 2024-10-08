@@ -124,15 +124,12 @@ import rigging as rg
 ollama = rg.get_generator("ollama/llama3.1")
 ```
 
-In the default configuration, the API base address is set to `http://localhost:11434`. It is possible to specify an alternative server by setting the OLLAMA_API_BASE environment variable:
+In the default configuration, the API base address is set to `http://localhost:11434`. It is possible to specify an alternative server by setting the `api_base` configuration variable:
 
 ```py
-import os
 import rigging as rg
 
-os.environ['OLLAMA_API_BASE'] = 'http://192.168.0.10:11434'
-
-ollama = rg.get_generator("ollama/llama3.1")
+ollama = rg.get_generator("ollama/llama3.1,api_base=http://192.168.0.10:11434")
 ```
 
 We also have experimental support for both [`vLLM`](https://docs.vllm.ai/en/latest/) 
