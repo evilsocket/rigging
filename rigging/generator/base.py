@@ -9,6 +9,7 @@ from typing_extensions import Self
 
 from rigging.error import InvalidModelSpecifiedError
 from rigging.message import Message, MessageDict
+from rigging.tool import Tool
 
 if t.TYPE_CHECKING:
     from rigging.chat import ChatPipeline, WatchChatCallback
@@ -25,8 +26,7 @@ CallableT = t.TypeVar("CallableT", bound=t.Callable[..., t.Any])
 
 @t.runtime_checkable
 class LazyGenerator(t.Protocol):
-    def __call__(self) -> type[Generator]:
-        ...
+    def __call__(self) -> type[Generator]: ...
 
 
 g_providers: dict[str, type[Generator] | LazyGenerator] = {}
@@ -228,6 +228,9 @@ class Generator(BaseModel):
     params: GenerateParams
     """The parameters used for generating completion messages."""
 
+    _tools: list[Tool] | None = None
+    """A list of tools to be used for tool calling."""
+
     _watch_callbacks: list[WatchCallbacks] = []
     _wrap: t.Callable[[CallableT], CallableT] | None = None
 
@@ -286,6 +289,10 @@ class Generator(BaseModel):
             The generator.
         """
         return self
+
+    def supports_function_calling(self) -> bool:
+        """Reurn true if the model supports function calling natively."""
+        return False
 
     def wrap(self, func: t.Callable[[CallableT], CallableT] | None) -> Self:
         """
@@ -361,16 +368,14 @@ class Generator(BaseModel):
         self,
         messages: t.Sequence[MessageDict],
         params: GenerateParams | None = None,
-    ) -> ChatPipeline:
-        ...
+    ) -> ChatPipeline: ...
 
     @t.overload
     def chat(
         self,
         messages: t.Sequence[Message] | MessageDict | Message | str | None = None,
         params: GenerateParams | None = None,
-    ) -> ChatPipeline:
-        ...
+    ) -> ChatPipeline: ...
 
     def chat(
         self,
@@ -439,8 +444,7 @@ def chat(
     generator: Generator,
     messages: t.Sequence[MessageDict],
     params: GenerateParams | None = None,
-) -> ChatPipeline:
-    ...
+) -> ChatPipeline: ...
 
 
 @t.overload
@@ -448,8 +452,7 @@ def chat(
     generator: Generator,
     messages: t.Sequence[Message] | MessageDict | Message | str | None = None,
     params: GenerateParams | None = None,
-) -> ChatPipeline:
-    ...
+) -> ChatPipeline: ...
 
 
 def chat(

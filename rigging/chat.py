@@ -23,7 +23,16 @@ from rigging.generator import GenerateParams, Generator, get_generator
 from rigging.generator.base import GeneratedMessage, StopReason, Usage  # noqa: TCH001
 from rigging.message import Message, MessageDict, Messages
 from rigging.model import Model, ModelT, SystemErrorModel, ValidationErrorModel
-from rigging.tool import Tool, ToolCalls, ToolDescriptionList, ToolResult, ToolResults, system_tool_extension
+from rigging.tool import (
+    Tool,
+    ToolCall,
+    ToolCallParameter,
+    ToolCalls,
+    ToolDescriptionList,
+    ToolResult,
+    ToolResults,
+    system_tool_extension,
+)
 
 if t.TYPE_CHECKING:
     from elasticsearch import AsyncElasticsearch
@@ -879,9 +888,28 @@ class ChatPipeline:
 
     def _until_tools_callback(self, message: Message) -> tuple[bool, list[Message]]:
         generated: list[Message] = [message]
+        pre_parsed = False
 
         try:
-            tool_calls = message.try_parse(ToolCalls)
+            if message.tool_calls:
+                pre_parsed = True
+                # preparsed from native function calling schema
+                tool_calls = ToolCalls(
+                    calls=[
+                        ToolCall(
+                            tool=call.function.name,
+                            function=call.function.name,
+                            parameters=[
+                                ToolCallParameter(name=key, text_value=value)
+                                for key, value in call.function.arguments.items()
+                            ],
+                        )
+                        for call in message.tool_calls
+                    ]
+                )
+            else:
+                # parse from raw output
+                tool_calls = message.try_parse(ToolCalls)
         except ValidationError as e:
             generated.append(Message.from_model(ValidationErrorModel(content=str(e))))
             return (True, generated)
@@ -898,26 +926,28 @@ class ChatPipeline:
 
         tool_results: list[ToolResult] = []
         errors: list[SystemErrorModel] = []
+
         for call in tool_calls.calls:
-            if call.tool not in [tool.name for tool in self.until_tools]:
-                errors.append(SystemErrorModel(content=f"Tool '{call.tool}' does not exist"))
+            found = False
+            for tool in self.until_tools:
+                tool_description = tool.get_description()
+                if call.function in [f.name for f in tool_description.functions]:
+                    tool_results.append(tool(call))
+                    found = True
+
+                if found:
+                    break
+
+            if not found:
+                errors.append(SystemErrorModel(content=f"Function '{call.function}' does not exist"))
                 continue
-
-            tool = next(t for t in self.until_tools if t.name == call.tool)
-            tool_description = tool.get_description()
-
-            if call.function not in [f.name for f in tool_description.functions]:
-                errors.append(SystemErrorModel(content=f"Function '{call.function}' does not exist on '{tool.name}'"))
-                continue
-
-            tool_results.append(tool(call))
 
         if errors:
             generated.append(Message.from_model(errors, suffix="Rewrite your message with all the required tags."))
         else:
             generated.append(Message.from_model(ToolResults(results=tool_results)))
 
-        return (True, generated)
+        return (not pre_parsed, generated)
 
     def _until_parse_callback(self, message: Message) -> tuple[bool, list[Message]]:
         should_continue: bool = False
@@ -1035,9 +1065,10 @@ class ChatPipeline:
 
     def _pre_run(self) -> None:
         if self.until_tools:
-            if self.inject_tool_prompt:
-                self.chat.inject_tool_prompt(self.until_tools)
-                self.inject_tool_prompt = False
+            if not self.generator.supports_function_calling():
+                if self.inject_tool_prompt:
+                    self.chat.inject_tool_prompt(self.until_tools)
+                    self.inject_tool_prompt = False
 
             # TODO: This can cause issues when certain APIs do not return
             # the stop sequence as part of the response. This behavior
@@ -1130,6 +1161,10 @@ class ChatPipeline:
 
     async def _run(self, states: list[RunState], on_failed: FailMode, batch_mode: bool = False) -> ChatList:
         pending_states = states
+        if self.generator.supports_function_calling():
+            logger.info("using native function calling")
+            self.generator._tools = self.until_tools
+
         while pending_states:
             try:
                 inbounds = await self.generator.generate_messages(

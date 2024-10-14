@@ -111,6 +111,15 @@ class ContentImageUrl(BaseModel):
 Content = t.Union[ContentText, ContentImageUrl]
 
 
+class FunctionCall(BaseModel):
+    name: str
+    arguments: dict[str, str]
+
+
+class ToolCall(BaseModel):
+    function: FunctionCall
+
+
 class Message(BaseModel):
     """
     Represents a message with role, content, and parsed message parts.
@@ -133,20 +142,25 @@ class Message(BaseModel):
     """The parsed message parts."""
     all_content: str | list[Content] = Field("", repr=False)
     """Interior str content or structured content parts."""
+    tool_calls: list[ToolCall] | None = Field(default_factory=list)
+    """The tool calls made during the message."""
 
     def __init__(
         self,
         role: Role,
         content: str | list[str | Content],
+        tool_calls: list[ToolCall] | None = None,
         parts: t.Sequence[ParsedMessagePart] | None = None,
         **kwargs: t.Any,
     ):
         if isinstance(content, str):
             content = dedent(content)
-        else:
+        elif content is not None:
             content = [ContentText(text=dedent(part)) if isinstance(part, str) else part for part in content]
+        else:
+            content = ""
 
-        super().__init__(role=role, all_content=content, parts=parts or [], **kwargs)
+        super().__init__(role=role, all_content=content, tool_calls=tool_calls, parts=parts or [], **kwargs)
 
     def __str__(self) -> str:
         return f"[{self.role}]: {self.content}"

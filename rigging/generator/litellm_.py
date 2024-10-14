@@ -16,7 +16,7 @@ from rigging.generator.base import (
     trace_messages,
     trace_str,
 )
-from rigging.message import Message
+from rigging.message import FunctionCall, Message, ToolCall
 
 # We should probably let people configure
 # this independently, but for now we'll
@@ -73,6 +73,9 @@ class LiteLLMGenerator(Generator):
             self._semaphore = asyncio.Semaphore(max_connections)
         return self._semaphore
 
+    def supports_function_calling(self) -> bool:
+        return litellm.supports_function_calling(self.model)
+
     async def _ensure_delay_between_requests(self) -> None:
         if self._last_request_time is None:
             return
@@ -103,8 +106,22 @@ class LiteLLMGenerator(Generator):
             usage = response.usage.model_dump()  # type: ignore
             usage["input_tokens"] = usage.pop("prompt_tokens")
             usage["output_tokens"] = usage.pop("completion_tokens")
+
+        tool_calls = None
+        if choice.message.tool_calls:
+            import json
+
+            tool_calls = [
+                ToolCall(
+                    function=FunctionCall(
+                        name=tool_call.function.name, arguments=json.loads(tool_call.function.arguments)
+                    )
+                )
+                for tool_call in choice.message.tool_calls
+            ]
+
         return GeneratedMessage(
-            message=Message(role="assistant", content=choice.message.content),  # type: ignore
+            message=Message(role="assistant", content=choice.message.content, tool_calls=tool_calls),  # type: ignore
             stop_reason=choice.finish_reason,
             usage=usage,
             extra={"response_id": response.id},
@@ -134,11 +151,36 @@ class LiteLLMGenerator(Generator):
             if self._wrap is not None:
                 acompletion = self._wrap(acompletion)
 
+            tools = None
+            if self._tools:
+                tools = []
+                for tool in self._tools:
+                    desc = tool.get_description()
+                    for func in desc.functions:
+                        func_params = {"type": "object", "properties": {}}
+                        for param in func.parameters:
+                            func_params["properties"][param.name] = {
+                                "type": param.type,
+                                "description": param.description,
+                            }
+
+                        tools.append(
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": func.name,
+                                    "description": func.description,
+                                    "parameters": func_params,
+                                },
+                            }
+                        )
+
             response = await acompletion(
                 model=self.model,
                 messages=[message.to_openai_spec() for message in messages],
                 api_key=self.api_key,
                 **self.params.merge_with(params).to_dict(),
+                tools=tools,
             )
 
             self._last_request_time = datetime.datetime.now()
